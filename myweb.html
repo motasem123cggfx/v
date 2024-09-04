@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="ar">
+
+<head>
+    <div id="sessionLinkContainer" style="display:none;">
+        <p>شارك هذا الرابط لدعوة الآخرين للانضمام:</p>
+        <a id="sessionLink" href="#" target="_blank"></a>
+    </div>
+
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>تطبيق فيديو بسيط</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 50px;
+        }
+
+        video {
+            width: 60%;
+            margin: 20px;
+            border: 2px solid #000;
+        }
+
+        #buttons {
+            margin-top: 20px;
+        }
+
+        button {
+            padding: 10px 20px;
+            margin: 10px;
+            font-size: 16px;
+            cursor: pointer;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>تطبيق فيديو بسيط</h1>
+    <video id="localVideo" autoplay muted></video>
+    <video id="remoteVideo" autoplay></video>
+    <div id="buttons">
+        <button id="startButton">ابدأ الفيديو</button>
+        <button id="callButton" disabled>اتصل</button>
+        <button id="hangupButton" disabled>انهاء المكالمة</button>
+    </div>
+
+    <script src="app.js"></script>
+    <script>const startButton = document.getElementById('startButton');
+        const joinButton = document.getElementById('joinButton');
+        const hangupButton = document.getElementById('hangupButton');
+        const localVideo = document.getElementById('localVideo');
+        const remoteVideo = document.getElementById('remoteVideo');
+        const sessionLinkContainer = document.getElementById('sessionLinkContainer');
+        const sessionLink = document.getElementById('sessionLink');
+
+        let localStream;
+        let peerConnection;
+        let sessionId;
+        const signalingServerUrl = 'ws://localhost:8080';
+        let socket;
+
+        const servers = {
+            iceServers: [
+                { urls: "stun:stun.l.google.com:19302" }
+            ]
+        };
+
+        startButton.onclick = startSession;
+        joinButton.onclick = joinSession;
+        hangupButton.onclick = hangup;
+
+        function setupWebSocket() {
+            socket = new WebSocket(signalingServerUrl);
+
+            socket.onopen = () => {
+                console.log('Connected to the signaling server');
+            };
+
+            socket.onmessage = (message) => {
+                const data = JSON.parse(message.data);
+                handleSignalingData(data);
+            };
+
+            socket.onerror = (error) => {
+                console.error('WebSocket error:', error);
+            };
+
+            socket.onclose = () => {
+                console.log('Disconnected from the signaling server');
+            };
+        }
+
+        async function startSession() {
+            sessionId = generateSessionId();
+            displaySessionLink(sessionId);
+
+            localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+            localVideo.srcObject = localStream;
+            setupWebSocket();
+        }
+
+        async function joinSession() {
+            const urlParams = new URLSearchParams(window.location.search);
+            sessionId = urlParams.get('sessionId');
+
+            if (sessionId) {
+                localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                localVideo.srcObject = localStream;
+                setupWebSocket();
+                initiateCall();
+            } else {
+                alert('Session ID not found!');
+            }
+        }
+
+        function displaySessionLink(sessionId) {
+            const link = `${window.location.origin}?sessionId=${sessionId}`;
+            sessionLink.href = link;
+            sessionLink.textContent = link;
+            sessionLinkContainer.style.display = 'block';
+        }
+
+        function initiateCall() {
+            peerConnection = new RTCPeerConnection(servers);
+            peerConnection.addStream(localStream);
+
+            peerConnection.onaddstream = (event) => {
+                remoteVideo.srcObject = event.stream;
+            };
+
+            peerConnection.onicecandidate = (event) => {
+                if (event.candidate) {
+                    sendSignalingData({
+                        type: 'candidate',
+                        candidate: event.candidate
+                    });
+                }
+            };
+
+            if (sessionId) {
+                peerConnection.createOffer()
+                    .then(offer => {
+                        return peerConnection.setLocalDescription(offer);
+                    })
+                    .then(() => {
+                        sendSignalingData({
+                            type: 'offer',
+                            sessionId: sessionId,
+                            offer: peerConnection.localDescription
+                        });
+                    });
+            }
+        }
+
+        function hangup() {
+            peerConnection.close();
+            hangupButton.disabled = true;
+            sendSignalingData({ type: 'hangup', sessionId: sessionId });
+        }
+
+        function handleSignalingData(data) {
+            if (data.sessionId !== sessionId) return;
+
+            switch (data.type) {
+                case 'offer':
+                    handleOffer(data.offer);
+                    break;
+                case 'answer':
+                    handleAnswer(data.answer);
+                    break;
+                case 'candidate':
+                    handleCandidate(data.candidate);
+                    break;
+                case 'hangup':
+                    handleHangup();
+                    break;
+            }
+        }
+
+        function handleOffer(offer) {
+            peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
+            peerConnection.createAnswer()
+                .then(answer => {
+                    return peerConnection.setLocalDescription(answer);
+                })
+                .then(() => {
+                    sendSignalingData({
+                        type: 'answer',
+                        sessionId: sessionId,
+                        answer: peerConnection.localDescription
+                    });
+                });
+        }
+
+        function handleAnswer(answer) {
+            peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+        }
+
+        function handleCandidate(candidate) {
+            peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+        }
+
+        function handleHangup() {
+            peerConnection.close();
+            hangupButton.disabled = true;
+        }
+
+        function sendSignalingData(data) {
+            socket.send(JSON.stringify(data));
+        }
+
+        function generateSessionId() {
+            return 'session-' + Math.random().toString(36).substr(2, 9);
+        }
+    </script>
+</body>
+
+</html>
